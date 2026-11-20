@@ -104,8 +104,10 @@ const P = {
   seek(t) { if (this.kind === 'yt') this.yt && this.yt.seekTo(t, true); else $('audio').currentTime = Math.max(0, t); },
   rate(r) { if (this.kind === 'yt') this.yt && this.yt.setPlaybackRate(r); else { $('audio').preservesPitch = true; $('audio').playbackRate = r; } }
 };
+let wake = null;
+async function keepAwake(on) { try { if (on && !wake) { wake = await navigator.wakeLock.request('screen'); wake.addEventListener('release', () => wake = null); } else if (!on && wake) { await wake.release(); wake = null; } } catch (e) {} }
 function onPlayState() {
-  const paused = P.paused();
+  const paused = P.paused(); keepAwake(!paused || document.body.classList.contains('stage'));
   $('playIco').innerHTML = paused ? '<path d="M6 3l13 8-13 8z" fill="currentColor"/>' : '<path d="M5 3h4v16H5zM13 3h4v16h-4z" fill="currentColor"/>';
   if (!paused) requestAnimationFrame(frame);
 }
@@ -133,9 +135,15 @@ const cyclePos = c => { if (!c) return; const { all, i, k } = posOf(c); S.pos[k]
 // ---------- song view ----------
 const arrow = d => d === 'U' ? '<path d="M17 4 L6 18 h7 v30 h8 v-30 h7 z" fill="currentColor"/>' : d === 'D' ? '<path d="M17 48 L6 34 h7 v-30 h8 v30 h7 z" fill="currentColor"/>' : '<circle cx="17" cy="26" r="3" fill="currentColor" opacity=".4"/>';
 function renderStrum(live) {
+  renderMini();
   const n = S.pat.length, lbl = []; for (let k = 0; k < n / 2; k++) lbl.push(String(k + 1), 'et');
   $('strum').style.gridTemplateColumns = `repeat(${n},minmax(0,1fr))`;
   $('strum').innerHTML = S.pat.map((p, k) => `<button type="button" class="slot ${p !== '-' ? 'on' : ''} ${p.endsWith('!') ? 'acc' : ''} ${live === k ? 'live' : ''}" data-k="${k}" aria-label="Temps ${lbl[k]} : ${p[0] === 'D' ? 'bas' : p[0] === 'U' ? 'haut' : 'rien'}${p.endsWith('!') ? ', accentué' : ''}"><small>${lbl[k]}</small><svg viewBox="0 0 34 52">${arrow(p[0])}</svg></button>`).join('');
+}
+function renderMini() {
+  const n = S.pat.length;
+  $('mini').style.gridTemplateColumns = `repeat(${n},minmax(0,1fr))`;
+  $('mini').innerHTML = S.pat.map((p, k) => `<span class="${p.endsWith('!') ? 'acc' : ''}"><svg viewBox="0 0 34 52">${arrow(p[0])}</svg><small>${k % 2 ? 'et' : k / 2 + 1}</small></span>`).join('');
 }
 function render() {
   $('capo').innerHTML = [0, 1, 2, 3, 4, 5, 7].map(c => `<button type="button" data-v="${c}" aria-pressed="${S.capo === c}">${c || 'Sans'}</button>`).join('');
@@ -153,9 +161,22 @@ function render() {
   $('alts').innerHTML = r.alt.map(a => `<button type="button" class="chip" data-p="${a}">${a.split('').map(c => c === 'D' ? '↓' : c === 'U' ? '↑' : '·').join(' ')}</button>`).join('');
   $('tempo').textContent = Math.round(S.bpm) + ' BPM';
   $('loopBtn').textContent = S.loop ? 'Arrêter la boucle' : 'Boucler 2 mesures';
-  renderStrum(); tickUI(true);
+  buildTrack(); renderStrum(); tickUI(true);
 }
-let lastBar = -1;
+function buildTrack() {
+  const r = S.song.res, starts = new Set();
+  r.bars.forEach(b => { let k = 0, d = 1e9; r.beats.forEach((t, i) => { const e = Math.abs(t - b.start); if (e < d) { d = e; k = i; } }); starts.add(k); });
+  let bar = 0;
+  $('track').innerHTML = r.beats.map((t, i) => {
+    const c = r.chords[i], chg = i === 0 || !same(c, r.chords[i - 1]), b1 = starts.has(i);
+    if (b1) bar++;
+    return `<div class="bt${b1 ? ' b1' : ''}" data-b="${i}">${b1 ? `<small>${bar}</small>` : '<small>&nbsp;</small>'}${chg && c ? nm(c) : '<i></i>'}</div>`;
+  }).join('');
+  const inBar = []; let p = 0; r.beats.forEach((t, i) => { if (starts.has(i)) p = 0; inBar.push(p++); });
+  const first = Math.min(...starts); for (let i = 0; i < first; i++) inBar[i] = (S.song.meter || S.meter) - first + i;
+  S.inBar = inBar;
+}
+let lastBar = -1, lastBeat = -1;
 function tickUI(force) {
   const r = S.song && S.song.res; if (!r) return;
   let t = P.time(); const d = P.dur();
@@ -163,11 +184,23 @@ function tickUI(force) {
   $('time').textContent = fmt(t) + ' / ' + fmt(d || 0);
   if (!seeking) $('seek').value = d ? Math.round(1000 * t / d) : 0;
   let i = 0; while (i + 1 < r.beats.length && r.beats[i + 1] <= t) i++;
+  const nb = r.beats[i + 1] || r.beats[i] + 0.5, fr = Math.max(-2, Math.min(1, (t - r.beats[i]) / ((nb - r.beats[i]) || 0.5)));
+  const lane = $('lane'), bw = parseFloat(getComputedStyle(lane).getPropertyValue('--bw')) || 76;
+  $('track').style.transform = `translateX(${lane.clientWidth * 0.16 - (i + fr) * bw}px)`;
+  const ms = S.inBar ? (S.inBar[i] || 0) * 2 + (fr >= 0.5 ? 1 : 0) : -1, mk = $('mini').children;
+  for (let k = 0; k < mk.length; k++) mk[k].classList.toggle('live', !P.paused() && k === ms);
+  if (i !== lastBeat) { const o = $('track').children; if (o[lastBeat]) o[lastBeat].classList.remove('on'); if (o[i]) o[i].classList.add('on'); lastBeat = i; }
   const c = r.chords[i] || r.chords.find(Boolean), nx = r.chords.slice(i + 1).find(n => n && !same(n, c));
   $('now').textContent = nm(c); $('dgNow').innerHTML = diagram(c); S.curChord = c;
   $('next').innerHTML = nx ? `Ensuite : <b>${nm(nx)}</b>` : '';
   const bi = r.bars.findIndex(b => t >= b.start && t < b.end);
-  if (bi !== lastBar || force) { document.querySelectorAll('.cell').forEach((e, k) => e.classList.toggle('cur', k === bi)); lastBar = bi; S.curBar = bi; }
+  if (bi !== lastBar || force) {
+    document.querySelectorAll('.cell').forEach((e, k) => e.classList.toggle('cur', k === bi)); lastBar = bi; S.curBar = bi;
+    const cell = document.querySelectorAll('.cell')[bi], g = $('grid').getBoundingClientRect();
+    if (cell && !force && !P.paused() && !document.body.classList.contains('stage') && g.bottom > 0 && g.top < innerHeight) {
+      const cr = cell.getBoundingClientRect(); if (cr.top < 80 || cr.bottom > innerHeight - 90) cell.scrollIntoView({ block: 'center', behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth' });
+    }
+  }
 }
 
 async function openSong(song, go) {
@@ -473,6 +506,16 @@ $('melBtn').addEventListener('click', async () => {
 $('octDn').addEventListener('click', () => { S.shift--; renderTab(); });
 $('octUp').addEventListener('click', () => { S.shift++; renderTab(); });
 $('copy').addEventListener('click', async () => { try { await navigator.clipboard.writeText($('tab').textContent); $('copy').textContent = 'Copié'; setTimeout(() => $('copy').textContent = 'Copier', 1500); } catch (e) { status('Copie impossible : sélectionne le texte à la main.'); } });
+async function stage(on) {
+  document.body.classList.toggle('stage', on); keepAwake(on || !P.paused());
+  try { if (on && !document.fullscreenElement) await document.documentElement.requestFullscreen({ navigationUI: 'hide' }); else if (!on && document.fullscreenElement) await document.exitFullscreen(); } catch (e) {}
+  scrollTo(0, 0); tickUI(true);
+}
+$('stageBtn').addEventListener('click', () => stage(true));
+$('stageExit').addEventListener('click', () => stage(false));
+document.addEventListener('fullscreenchange', () => { if (!document.fullscreenElement && document.body.classList.contains('stage')) stage(false); });
+addEventListener('resize', () => tickUI(true));
+document.addEventListener('visibilitychange', () => { if (!document.hidden && (!P.paused() || document.body.classList.contains('stage'))) { wake = null; keepAwake(true); } });
 addEventListener('hashchange', route);
 
 // ---------- start ----------

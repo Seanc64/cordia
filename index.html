@@ -108,6 +108,32 @@ pre{overflow-x:auto;background:var(--cell);border-radius:12px;padding:16px;font:
 body:not([data-view=morceau]) header p,body:not([data-view=morceau]) header .row{display:none}
 body:not([data-view=morceau]) header h1{font-size:24px;margin:0}
 body:not([data-view=morceau]) header #status:empty{display:none}
+.lane{grid-column:1/-1;position:relative;height:92px;overflow:hidden;background:var(--cell);border-radius:14px;--bw:76px}
+.lane::after{content:"";position:absolute;inset:0 auto 0 0;width:15%;background:linear-gradient(90deg,var(--cell),transparent);pointer-events:none}
+.track{position:absolute;top:0;left:0;height:100%;display:flex;will-change:transform}
+.bt{flex:none;width:var(--bw);height:100%;border-left:1px solid var(--line);display:flex;flex-direction:column;justify-content:center;gap:2px;padding-left:10px;font-weight:800;font-size:28px;line-height:1;white-space:nowrap}
+.bt.b1{border-left:2.5px solid var(--ink)}
+.bt small{font-size:11px;color:var(--mut);font-weight:600}
+.bt i{display:block;width:6px;height:6px;border-radius:50%;background:var(--mut);opacity:.5}
+.bt.on{color:var(--accink)}
+.head{position:absolute;top:0;bottom:0;left:16%;width:4px;margin-left:-2px;background:var(--acc);border-radius:2px;z-index:1}
+.mini{grid-column:1/-1;display:grid;gap:4px;margin-top:-6px}
+.mini span{display:grid;justify-items:center;padding:4px 0;border-radius:8px;color:var(--mut)}
+.mini span.acc{color:var(--accink)}.mini span.live{background:var(--acc);color:#1b0d05}
+.mini svg{width:18px;height:28px}.mini small{font-size:11px;font-weight:600}
+.exit{display:none}
+body.stage header,body.stage nav.tabs,body.stage main>div>section:not(:first-child),body.stage .tools,body.stage .meta,body.stage .title{display:none!important}
+body.stage{padding-bottom:0}
+body.stage .player{min-height:100svh;align-content:center;padding-top:env(safe-area-inset-top)}
+body.stage .exit{display:inline-flex;grid-column:1/-1;justify-self:start;margin-bottom:8px}
+body.stage .now{font-size:clamp(96px,30vw,220px)}
+body.stage .next{font-size:24px}
+body.stage .lane{height:130px;--bw:96px}
+body.stage .bt{font-size:40px}
+body.stage .dg{width:150px;height:190px}
+body.stage .mini svg{width:26px;height:40px}
+@media(max-width:600px){body.stage .dg{width:100px;height:125px}body.stage .lane{--bw:84px}body.stage .bt{font-size:34px}}
+.exit-wrap{display:contents}
 nav.tabs{position:fixed;left:0;right:0;bottom:0;display:grid;grid-template-columns:repeat(4,1fr);background:var(--bg);border-top:1.5px solid var(--line);padding-bottom:env(safe-area-inset-bottom);z-index:5}
 nav.tabs a{display:flex;flex-direction:column;align-items:center;gap:2px;padding:8px 0;color:var(--mut);text-decoration:none;font-size:13px;font-weight:600;min-height:60px;justify-content:center}
 nav.tabs a[aria-current=page]{color:var(--accink)}
@@ -141,6 +167,7 @@ dialog::backdrop{background:rgb(0 0 0/.5)}
 <div class="view" id="v-morceau">
 <section class="band"><div class="wrap player">
   <div>
+    <button type="button" id="stageExit" class="exit">Quitter le mode jeu</button>
     <div class="title"><input id="songTitle" aria-label="Titre du morceau" value=""></div>
     <div class="now" id="now">–</div>
     <div class="next" id="next"></div>
@@ -148,6 +175,8 @@ dialog::backdrop{background:rgb(0 0 0/.5)}
   </div>
   <svg class="dg" id="dgNow" viewBox="0 0 120 150" role="img" aria-label="Diagramme de l'accord en cours"></svg>
   <div id="ytBox" hidden><div id="ytPlayer"></div></div>
+  <div class="lane" id="lane" aria-hidden="true"><div class="track" id="track"></div><div class="head"></div></div>
+  <div class="mini" id="mini" aria-label="Rythme de grattage"></div>
   <div class="bar">
     <button class="play" id="play" type="button" aria-label="Lecture"><svg width="22" height="22" viewBox="0 0 22 22" id="playIco"><path d="M6 3l13 8-13 8z" fill="currentColor"/></svg></button>
     <input type="range" id="seek" min="0" max="1000" value="0" aria-label="Position">
@@ -157,6 +186,7 @@ dialog::backdrop{background:rgb(0 0 0/.5)}
     <span>Vitesse <span class="seg" id="speed"><button type="button" data-v="0.5" aria-pressed="false">50 %</button><button type="button" data-v="0.75" aria-pressed="false">75 %</button><button type="button" data-v="1" aria-pressed="true">100 %</button></span></span>
     <span>Capo <span class="seg" id="capo"></span></span>
     <button type="button" id="loopBtn">Boucler 2 mesures</button>
+    <button type="button" id="stageBtn" class="main">Mode jeu</button>
   </div>
   <audio id="audio" preload="auto"></audio>
 </div></section>
