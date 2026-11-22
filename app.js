@@ -60,6 +60,16 @@ async function getX(song) {
   else if (song.blob) S.x = (await decode(await song.blob.arrayBuffer())).x;
   return S.x;
 }
+function mapRes(res, song) {
+  const sync = (song.sync || []).filter(s => s.on);
+  if (!sync.length) return shiftRes(res, song.offset || 0);
+  const lat = song.lat || 0;
+  const f = t => { let b = sync[0], d = Infinity; for (const s of sync) { const e = Math.abs(s.rt - t); if (e < d) { d = e; b = s; } } return b.vt + (t - b.rt) - lat; };
+  res.beats = res.beats.map(f);
+  res.bars.forEach(b => { b.start = f(b.start); b.end = f(b.end); });
+  song.mapT = f;
+  return res;
+}
 function shiftRes(res, off) {
   if (!off) return res;
   res.beats = res.beats.map(t => t + off);
@@ -177,12 +187,16 @@ function buildTrack() {
   S.inBar = inBar;
 }
 let lastBar = -1, lastBeat = -1;
+const nudge = () => (S.song && S.song.nudge) || 0;
+const effTime = () => P.time() + nudge();
+const seekSong = t => P.seek(Math.max(0, t - nudge()));
+function showNudge() { const n = nudge(); $('nudgeVal').textContent = (n > 0 ? '+' : n < 0 ? '−' : '') + Math.abs(n).toFixed(1).replace('.', ',') + ' s'; }
 function tickUI(force) {
   const r = S.song && S.song.res; if (!r) return;
-  let t = P.time(); const d = P.dur();
-  if (S.loop && !P.paused() && t >= S.loop.b) { P.seek(S.loop.a); t = S.loop.a; }
-  $('time').textContent = fmt(t) + ' / ' + fmt(d || 0);
-  if (!seeking) $('seek').value = d ? Math.round(1000 * t / d) : 0;
+  const pt = P.time(), d = P.dur(); let t = pt + nudge();
+  if (S.loop && !P.paused() && t >= S.loop.b) { seekSong(S.loop.a); t = S.loop.a; }
+  $('time').textContent = fmt(pt) + ' / ' + fmt(d || 0);
+  if (!seeking) $('seek').value = d ? Math.round(1000 * pt / d) : 0;
   let i = 0; while (i + 1 < r.beats.length && r.beats[i + 1] <= t) i++;
   const nb = r.beats[i + 1] || r.beats[i] + 0.5, fr = Math.max(-2, Math.min(1, (t - r.beats[i]) / ((nb - r.beats[i]) || 0.5)));
   const lane = $('lane'), bw = parseFloat(getComputedStyle(lane).getPropertyValue('--bw')) || 76;
@@ -216,7 +230,7 @@ async function openSong(song, go) {
     const blob = song.blob || (song.pcm ? wav(toF32(song.pcm)) : null);
     if (blob) $('audio').src = URL.createObjectURL(blob);
   }
-  savePrefs(); render();
+  taps = []; savePrefs(); render(); showNudge();
   if (go) location.hash = '#morceau';
 }
 
@@ -234,7 +248,7 @@ async function importFile(file) {
 async function reanalyse(meter) {
   const song = S.song; if (!song || song.id === 'demo' && !song.pcm) return;
   status('Nouvelle analyse…');
-  const x = await getX(song), res = shiftRes(await analyse(x, meter, status), song.offset || 0);
+  const x = await getX(song), res = mapRes(await analyse(x, meter, status), song);
   Object.assign(song, { res, meter, bpm: res.bpm, pat: patternFrom(res) });
   await DB.put(song); const keepX = S.x; await openSong(song); S.x = keepX;
   status(`Analyse refaite en ${meter}/4. Les corrections manuelles de ce morceau ont été remises à zéro.`);
@@ -263,7 +277,7 @@ function startLoop() {
   const r = S.song.res; let next = ac.currentTime + 0.1, k = 0;
   timer = setInterval(() => {
     while (next < ac.currentTime + 0.15) {
-      const t = P.time(); let i = 0; while (i + 1 < r.beats.length && r.beats[i + 1] <= t) i++;
+      const t = effTime(); let i = 0; while (i + 1 < r.beats.length && r.beats[i + 1] <= t) i++;
       const c = r.chords[i] || r.chords.find(Boolean) || { r: 7, q: '' }, p = S.pat[k];
       if (p !== '-') strumAt(next, c, p[0], p.endsWith('!'));
       const kk = k; setTimeout(() => timer && renderStrum(kk), Math.max(0, (next - ac.currentTime) * 1000));
@@ -312,6 +326,7 @@ function liveTick() {
   let rms = 0; for (let i = 0; i < td.length; i++) rms += td[i] * td[i]; rms = Math.sqrt(rms / td.length);
   $('liveLvl').style.width = Math.min(100, rms * 400) + '%';
   const el = (performance.now() - L.t0) / 1000;
+  if (L.yt) { try { L.sync.push({ rt: L.ac.currentTime - L.acStart, vt: L.yt.getCurrentTime(), on: L.yt.getPlayerState() === 1 }); } catch (e) {} }
   $('liveTime').textContent = fmt(el);
   if (rms < 0.004) { $('liveInfo').textContent = 'Écoute… (trop calme pour l\'instant)'; return; }
   const lin = L.lin; for (let k = 0; k < fb.length; k++) lin[k] = 10 ** (fb[k] / 20);
@@ -343,7 +358,8 @@ async function liveStart() {
   L.chunks = []; L.len = 0; L.hist = []; L.cur = null; L.cand = null; L.chr.fill(0); L.bass.fill(0);
   const cap = L.ac.sampleRate * 600;
   L.sp.onaudioprocess = e => { e.outputBuffer.getChannelData(0).fill(0); if (L.len < cap) { L.chunks.push(new Float32Array(e.inputBuffer.getChannelData(0))); L.len += 4096; } };
-  L.ytStart = L.yt && L.yt.getCurrentTime ? L.yt.getCurrentTime() : 0;
+  L.ytStart = L.yt && L.yt.getCurrentTime ? L.yt.getCurrentTime() : 0; L.sync = []; L.acStart = L.ac.currentTime;
+  L.lat = Math.min(0.4, (L.ac.baseLatency || 0) + (L.ac.outputLatency || 0) + 0.08);
   L.t0 = performance.now(); L.on = true; L.timer = setInterval(liveTick, 100);
   try { L.wake = await navigator.wakeLock.request('screen'); } catch (e) {}
   $('liveBtn').textContent = 'Arrêter et analyser'; $('liveHist').innerHTML = '';
@@ -353,15 +369,17 @@ async function liveStop() {
   clearInterval(L.timer); L.on = false; $('liveBtn').textContent = "Commencer l'écoute";
   try { L.sp.disconnect(); L.st.getTracks().forEach(t => t.stop()); } catch (e) {}
   try { L.wake && L.wake.release(); } catch (e) {}
-  const rate = L.ac.sampleRate; L.ac.close();
+  const rate = L.ac.sampleRate, lat = L.lat || 0.12; L.ac.close();
   if (L.len < rate * 5) { $('liveInfo').textContent = 'Trop court pour analyser (au moins 5 secondes).'; return; }
   $('liveInfo').textContent = 'Analyse de l\'enregistrement…';
   const raw = new Float32Array(L.len); let o = 0; L.chunks.forEach(c => { raw.set(c, o); o += c.length; }); L.chunks = [];
   const x = await resample(raw, rate);
-  const res = shiftRes(await analyse(x, S.meter, t => $('liveInfo').textContent = t), L.yt ? L.ytStart : 0);
+  const tmp = { sync: L.yt ? L.sync : [], offset: L.yt ? L.ytStart : 0, lat };
+  if (L.yt && !L.sync.some(s => s.on)) status("La vidéo n'a pas été lue pendant l'écoute : les accords risquent d'être décalés. Tu peux ajuster avec « Synchro ».");
+  const res = L.yt ? mapRes(await analyse(x, S.meter, t => $('liveInfo').textContent = t), tmp) : await analyse(x, S.meter, t => $('liveInfo').textContent = t);
   let title = 'Écoute du ' + dateFr(Date.now());
   try { if (L.yt) title = L.yt.getVideoData().title || title; } catch (e) {}
-  const song = { id: 'l' + Date.now().toString(36), title, source: L.yt ? 'yt' : 'live', ytId: L.yt ? L.ytId : null, offset: L.yt ? L.ytStart : 0, pcm: toI16(x), res, meter: S.meter, bpm: res.bpm, created: Date.now() };
+  const song = { id: 'l' + Date.now().toString(36), title, source: L.yt ? 'yt' : 'live', ytId: L.yt ? L.ytId : null, offset: L.yt ? L.ytStart : 0, sync: tmp.sync, lat, pcm: toI16(x), res, meter: S.meter, bpm: res.bpm, created: Date.now() };
   song.pat = patternFrom(res);
   if (L.yt) { try { L.yt.pauseVideo(); } catch (e) {} }
   await DB.put(song); await openSong(song, true); S.x = x;
@@ -447,9 +465,23 @@ let press = null, longDone = false;
 $('grid').addEventListener('pointerdown', e => { const b = e.target.closest('.cell'); if (!b) return; longDone = false; press = setTimeout(() => { longDone = true; openEdit(+b.dataset.i); }, 550); });
 ['pointerup', 'pointerleave', 'pointercancel'].forEach(ev => $('grid').addEventListener(ev, () => clearTimeout(press)));
 $('grid').addEventListener('contextmenu', e => e.preventDefault());
-$('grid').addEventListener('click', e => { const b = e.target.closest('.cell'); if (!b || !S.song || longDone) return; P.seek(S.song.res.bars[+b.dataset.i].start); tickUI(true); });
+$('grid').addEventListener('click', e => { const b = e.target.closest('.cell'); if (!b || !S.song || longDone) return; seekSong(S.song.res.bars[+b.dataset.i].start); tickUI(true); });
 $('shapes').addEventListener('click', e => { const b = e.target.closest('.shape'); if (b) cyclePos(S.uniq[+b.dataset.u]); });
 $('dgNow').addEventListener('click', () => cyclePos(S.curChord));
+const doNudge = dv => { if (!S.song) return; S.song.nudge = Math.round(((S.song.nudge || 0) + dv) * 10) / 10; showNudge(); persist(); tickUI(true); };
+$('nEarly').addEventListener('click', () => doNudge(0.1));
+$('nLate').addEventListener('click', () => doNudge(-0.1));
+$('nReset').addEventListener('click', () => { if (S.song) { S.song.nudge = 0; showNudge(); persist(); tickUI(true); } });
+let taps = [];
+$('tapOne').addEventListener('click', () => {
+  if (!S.song || P.paused()) { status('Lance la lecture, puis touche ce bouton à chaque « 1 » de mesure.'); return; }
+  const r = S.song.res, t = P.time();
+  let best = r.bars[0], d = Infinity; r.bars.forEach(b => { const e = Math.abs(b.start - t - nudge()); if (e < d) { d = e; best = b; } });
+  taps.push(best.start - t); if (taps.length > 4) taps.shift();
+  const s = taps.slice().sort((x, y) => x - y), m = s[s.length >> 1];
+  S.song.nudge = Math.round(m * 10) / 10; showNudge(); persist(); tickUI(true);
+  status(taps.length < 3 ? `Encore ${3 - taps.length} tape${3 - taps.length > 1 ? 's' : ''} sur le « 1 »…` : 'Synchro réglée. Continue à taper pour affiner, ou ajuste avec Plus tôt / Plus tard.');
+});
 $('loopBtn').addEventListener('click', () => {
   if (!S.song) return;
   if (S.loop) { S.loop = null; render(); return; }
@@ -494,7 +526,8 @@ function renderTab() {
   if (!S.mel) return;
   const n = S.mel.notes;
   if (!n.length) { $('tab').textContent = 'Aucune note nette trouvée. Essaie un enregistrement de voix seule, sans accompagnement.'; return; }
-  const off = S.song.offset || 0, nn = n.map(o => ({ ...o, t: o.t + off, end: o.end + off }));
+  const off = S.song.offset || 0, mt = S.song.mapT || (S.song.sync && S.song.sync.some(s => s.on) ? (mapRes({ beats: [], bars: [] }, S.song), S.song.mapT) : null);
+  const nn = n.map(o => mt ? { ...o, t: mt(o.t), end: mt(o.end) } : { ...o, t: o.t + off, end: o.end + off });
   $('tab').textContent = tabText(nn, tabPositions(nn, S.shift * 12), S.song.res.bars.map(b => b.start), innerWidth < 600 ? 10 : 18);
   $('melNote').textContent = `${n.length} notes${S.mel.cut ? ', sur les 2 premières minutes' : ''}. Accordage standard, octave ${S.shift > 0 ? '+' + S.shift : S.shift}.`;
 }

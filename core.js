@@ -117,7 +117,7 @@ for (let r = 0; r < 12; r++) QUAL.forEach(([q, iv], qi) => {
   iv.forEach((s, i) => { const w = i === 3 ? 0.8 : 1; [[0, 1], [12, 0.6], [19, 0.36], [24, 0.22], [28, 0.13]].forEach(([h, g]) => v[(r + s + h) % 12] += w * g); });
   let n = 0; v.forEach(a => n += a * a); n = Math.sqrt(n); TPL.push({ r, q, v: v.map(a => a / n), pen: qi > 1 ? 0.87 : 1 });
 });
-function chordsByBeat(ch, beats) {
+function chordsByBeat(ch, beats, penAt) {
   const nb = beats.length, scores = [], eB = [];
   for (let i = 0; i < nb; i++) {
     const a = beats[i], b = i + 1 < nb ? beats[i + 1] : a + (a - (beats[i - 1] || 0));
@@ -132,8 +132,9 @@ function chordsByBeat(ch, beats) {
   for (let i = 0; i < nb; i++) for (let s = 0; s < raw[i].length; s++) scores[i][s] = (raw[i][s] + 0.5 * ((raw[i - 1] || raw[i])[s] + (raw[i + 1] || raw[i])[s])) / 2;
   const eq = pct(eB, 0.5) * 0.12;
   // Viterbi with change penalty
-  const S = TPL.length, pen = 0.25; let dp = scores[0] ? scores[0].slice() : [], bk = [];
+  const S = TPL.length; let dp = scores[0] ? scores[0].slice() : [], bk = [];
   for (let i = 1; i < nb; i++) {
+    const pen = penAt ? penAt(i) : 0.25;
     const mx = Math.max(...dp), am = dp.indexOf(mx), nd = new Array(S), bb = new Int16Array(S);
     for (let s = 0; s < S; s++) { if (dp[s] >= mx - pen) { nd[s] = dp[s] + scores[i][s]; bb[s] = s; } else { nd[s] = mx - pen + scores[i][s]; bb[s] = am; } }
     dp = nd; bk.push(bb);
@@ -304,9 +305,14 @@ function synthDemo() {
 async function analyse(x, meter, progress) {
   progress('Détection des attaques…'); const { env, dt } = await onsetEnv(x);
   progress('Recherche du tempo…'); await tick(); const bpm = tempo(env, dt); const beats = beatTrack(env, dt, bpm);
-  progress('Reconnaissance des accords…'); const ch = await chroma(x); const chords = chordsByBeat(ch, beats);
+  progress('Reconnaissance des accords…'); const ch = await chroma(x); let chords = chordsByBeat(ch, beats);
+  const cnt = new Array(meter).fill(0);
+  for (let i = 1; i < chords.length; i++) if (!same(chords[i], chords[i - 1])) cnt[i % meter]++;
+  const ph = cnt.indexOf(Math.max(...cnt));
+  chords = chordsByBeat(ch, beats, i => { const p = ((i - ph) % meter + meter) % meter; return p === 0 ? 0.12 : (meter === 4 && p === 2) ? 0.24 : 0.45; });
   progress('Rythme de grattage…'); await tick();
   const st = structure(beats, chords, env, dt, meter);
   const realBpm = beats.length > 1 ? 60 * (beats.length - 1) / (beats[beats.length - 1] - beats[0]) : bpm;
-  return { bpm: realBpm, beats, chords, ...st, capo: capoAdvice(chords) };
+  const L = 0.025; st.bars.forEach(b => { b.start += L; b.end += L; });
+  return { bpm: realBpm, beats: beats.map(b => b + L), chords, ...st, capo: capoAdvice(chords) };
 }
